@@ -27,4 +27,4 @@ build-later:  ## Builds the CLI
 	-o ${OUTPUT_BIN} .
 
 img:    ## Build Docker Image
-	@docker build --rm -t ${IMAGE} .
+	@docker build --rm -t ${IMG_NAME} .
