@@ -19,14 +19,22 @@ type state int
 
 const (
 	stateAskName state = iota
+	stateAskOwner
 	stateAskTrigger
+	stateAskStartDate
 	stateAskCron
+	stateAskWindow
+	stateAskTask
+	stateTaskConfig
 	stateDone
 	stateQuit
 )
 
 const (
+	startDatePlace  = "Specify the start date of schedule?"
 	cronPlaceholder = "Specify the cron schedule, eg. '0 2 * * *' for 2AM every day."
+
+	dateFormat = "2006-01-02"
 
 	triggerManual    = "Manual"
 	triggerScheduled = "Scheduled"
@@ -48,12 +56,12 @@ func NewCreateModel() (*createModel, error) {
 
 	f.triggerList = list.New([]list.Item{
 		listItem{
-			name:        "Manual",
-			description: "Job should be triggered manually",
-		},
-		listItem{
 			name:        "Scheduled",
 			description: "Job runs automatically on a schedule",
+		},
+		listItem{
+			name:        "Manual",
+			description: "Job should be triggered manually",
 		},
 	}, list.NewDefaultDelegate(), width, lineHeight)
 
@@ -75,16 +83,22 @@ type createModel struct {
 	state     state
 	questions int
 
-	name string
+	name  string
+	owner string
 
 	// triggerType is the type of trigger. cron or manual.
 	triggerType string
 
 	// cron expression and the next invocation
+	startDate    time.Time
+	startDateErr error
+
 	cron      string
 	humanCron string
 	cronError error
 	nextCron  time.Time
+
+	window string
 
 	textinput   textinput.Model
 	triggerList list.Model
@@ -138,8 +152,12 @@ func (c *createModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch c.state {
 		case stateAskName:
 			return c.updateName(msg)
+		case stateAskOwner:
+			return c.updateOwner(msg)
 		case stateAskTrigger:
 			return c.updateTrigger(msg)
+		case stateAskStartDate:
+			return c.updateStartDate(msg)
 		case stateAskCron:
 			return c.updateCron(msg)
 		}
@@ -163,6 +181,21 @@ func (c *createModel) updateName(msg tea.Msg) (tea.Model, tea.Cmd) {
 	c.textinput, cmd = c.textinput.Update(msg)
 
 	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEnter && c.name != "" {
+		c.textinput.Placeholder = ""
+		c.textinput.SetValue("")
+		c.state = stateAskOwner
+	}
+
+	return c, cmd
+}
+
+func (c *createModel) updateOwner(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	c.textinput.Placeholder = "Owner of the job?"
+	c.owner = c.textinput.Value()
+	c.textinput, cmd = c.textinput.Update(msg)
+
+	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEnter && c.owner != "" {
 		c.textinput.Placeholder = cronPlaceholder
 		c.textinput.SetValue("")
 		c.state = stateAskTrigger
@@ -187,9 +220,10 @@ func (c *createModel) updateTrigger(msg tea.Msg) (tea.Model, tea.Cmd) {
 			c.state = stateDone
 			c.textinput.SetValue("")
 		case triggerScheduled:
-			c.textinput.Placeholder = cronPlaceholder
-			c.state = stateAskCron
-			c.textinput.SetValue("")
+			c.textinput.Placeholder = startDatePlace
+			c.state = stateAskStartDate
+			today := time.Now().Format(dateFormat)
+			c.textinput.SetValue(today)
 		}
 		return c, nil
 	}
@@ -197,6 +231,31 @@ func (c *createModel) updateTrigger(msg tea.Msg) (tea.Model, tea.Cmd) {
 	c.triggerList, cmd = c.triggerList.Update(msg)
 	cmds = append(cmds, cmd)
 	return c, tea.Batch(cmds...)
+}
+
+func (c *createModel) updateStartDate(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	c.textinput.Placeholder = startDatePlace
+	startString := c.textinput.Value()
+	c.textinput, cmd = c.textinput.Update(msg)
+
+	var err error
+	c.startDate, err = time.Parse(dateFormat, startString)
+	if err != nil {
+		c.startDateErr = fmt.Errorf("Invalid date: %s", c.startDate)
+	} else if c.startDate.Year() < 2000 {
+		c.startDateErr = fmt.Errorf("Date before 2000 are not allowed")
+	} else {
+		c.startDateErr = nil
+	}
+
+	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEnter && c.startDateErr == nil {
+		c.textinput.Placeholder = cronPlaceholder
+		c.textinput.SetValue("")
+		c.state = stateAskCron
+	}
+
+	return c, cmd
 }
 
 func (c *createModel) updateCron(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -215,7 +274,11 @@ func (c *createModel) updateCron(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if desc, err := humancron.NewDescriptor(); err == nil {
 			c.humanCron, _ = desc.ToDescription(c.cron, humancron.Locale_en)
 		}
-		c.nextCron = schedule.Next(time.Now())
+		start := time.Now()
+		if start.Before(c.startDate) {
+			start = c.startDate
+		}
+		c.nextCron = schedule.Next(start)
 	}
 
 	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEnter && c.cron != "" && c.cronError == nil {
@@ -237,8 +300,12 @@ func (c *createModel) View() string {
 	switch c.state {
 	case stateAskName:
 		b.WriteString(c.renderName())
+	case stateAskOwner:
+		b.WriteString(c.renderOwner())
 	case stateAskTrigger:
 		b.WriteString(c.renderTrigger())
+	case stateAskStartDate:
+		b.WriteString(c.renderStartDate())
 	case stateAskCron:
 		b.WriteString(c.renderCron())
 	case stateDone:
@@ -274,9 +341,17 @@ func (c *createModel) renderState() string {
 
 	write("Job name: " + BoldStyle.Render(c.name) + "\n")
 
+	if c.owner != "" && c.state != stateAskOwner {
+		write("Owner: " + BoldStyle.Render(c.owner) + "\n")
+	}
+
 	if c.triggerType != "" {
 		write("Job trigger: " + BoldStyle.Render(c.triggerType) + "\n")
 	}
+	if c.startDate.Year() > 2000 && c.state != stateAskStartDate {
+		write("Start Date: " + BoldStyle.Render(c.startDate.Format(dateFormat)) + "\n")
+	}
+
 	if c.cron != "" && c.state != stateAskCron {
 		write("Cron schedule: " + BoldStyle.Render(c.cron) + " (" + c.humanCron + ")\n")
 	}
@@ -291,10 +366,29 @@ func (c *createModel) renderName() string {
 	return b.String()
 }
 
+func (c *createModel) renderOwner() string {
+	b := &strings.Builder{}
+	b.WriteString(BoldStyle.Render(fmt.Sprintf("%d. Owner:", c.questions)) + "\n")
+	b.WriteString(c.textinput.View())
+	return b.String()
+}
+
 func (c *createModel) renderTrigger() string {
 	b := &strings.Builder{}
 	b.WriteString(BoldStyle.Render(fmt.Sprintf("%d. How should the job trigger?", c.questions)) + "\n\n")
 	b.WriteString(c.triggerList.View())
+	return b.String()
+}
+
+func (c *createModel) renderStartDate() string {
+	b := &strings.Builder{}
+	b.WriteString(BoldStyle.Render(fmt.Sprintf("%d. Start Date:", c.questions)) + "\n")
+	b.WriteString(c.textinput.View())
+	if c.startDateErr != nil {
+		b.WriteString("\n")
+		b.WriteString(RenderWarning(c.startDateErr.Error()))
+	}
+
 	return b.String()
 }
 
