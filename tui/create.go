@@ -65,6 +65,18 @@ func NewCreateModel() (*createModel, error) {
 		},
 	}, list.NewDefaultDelegate(), width, lineHeight)
 
+	f.taskList = list.New([]list.Item{
+		listItem{
+			name:        "Python",
+			description: "Use python as task",
+		},
+		listItem{
+			name:        "BQ2BQ",
+			description: "Run bigquery task",
+		},
+	}, list.NewDefaultDelegate(), width, lineHeight)
+	f.taskList.Title = "List of installed task"
+
 	f.textinput.Focus()
 	f.textinput.CharLimit = 256
 	f.textinput.Width = width
@@ -100,8 +112,11 @@ type createModel struct {
 
 	window string
 
+	taskName string
+
 	textinput   textinput.Model
 	triggerList list.Model
+	taskList    list.Model
 }
 
 // Ensure that createModel fulfils the tea.Model interface.
@@ -160,6 +175,10 @@ func (c *createModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return c.updateStartDate(msg)
 		case stateAskCron:
 			return c.updateCron(msg)
+		case stateAskWindow:
+			return c.updateWindow(msg)
+		case stateAskTask:
+			return c.updateTask(msg)
 		}
 		return c, nil
 	}()
@@ -217,7 +236,7 @@ func (c *createModel) updateTrigger(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch c.triggerType {
 		case triggerManual:
 			c.textinput.Placeholder = cronPlaceholder
-			c.state = stateDone
+			c.state = stateAskWindow
 			c.textinput.SetValue("")
 		case triggerScheduled:
 			c.textinput.Placeholder = startDatePlace
@@ -229,6 +248,28 @@ func (c *createModel) updateTrigger(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	c.triggerList, cmd = c.triggerList.Update(msg)
+	cmds = append(cmds, cmd)
+	return c, tea.Batch(cmds...)
+}
+
+func (c *createModel) updateTask(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var (
+		cmd  tea.Cmd
+		cmds []tea.Cmd
+	)
+
+	// We press enter to select an item
+	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEnter {
+		c.taskName = c.taskList.SelectedItem().FilterValue()
+
+		c.textinput.Placeholder = ""
+		c.state = stateDone
+		c.textinput.SetValue("")
+
+		return c, nil
+	}
+
+	c.taskList, cmd = c.taskList.Update(msg)
 	cmds = append(cmds, cmd)
 	return c, tea.Batch(cmds...)
 }
@@ -253,6 +294,20 @@ func (c *createModel) updateStartDate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		c.textinput.Placeholder = cronPlaceholder
 		c.textinput.SetValue("")
 		c.state = stateAskCron
+	}
+
+	return c, cmd
+}
+func (c *createModel) updateWindow(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	c.textinput.Placeholder = "Select data window?"
+	c.window = c.textinput.Value()
+	c.textinput, cmd = c.textinput.Update(msg)
+
+	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEnter && c.window != "" {
+		c.textinput.Placeholder = ""
+		c.textinput.SetValue("")
+		c.state = stateAskTask
 	}
 
 	return c, cmd
@@ -284,7 +339,7 @@ func (c *createModel) updateCron(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEnter && c.cron != "" && c.cronError == nil {
 		c.textinput.Placeholder = cronPlaceholder
 		c.textinput.SetValue("")
-		c.state = stateDone
+		c.state = stateAskWindow
 	}
 
 	return c, cmd
@@ -308,6 +363,10 @@ func (c *createModel) View() string {
 		b.WriteString(c.renderStartDate())
 	case stateAskCron:
 		b.WriteString(c.renderCron())
+	case stateAskWindow:
+		b.WriteString(c.renderWindow())
+	case stateAskTask:
+		b.WriteString(c.renderTask())
 	case stateDone:
 		b.WriteString("\n")
 	}
@@ -356,6 +415,13 @@ func (c *createModel) renderState() string {
 		write("Cron schedule: " + BoldStyle.Render(c.cron) + " (" + c.humanCron + ")\n")
 	}
 
+	if c.window != "" && c.state != stateAskWindow {
+		write("Window: " + BoldStyle.Render(c.window) + "\n")
+	}
+	if c.taskName != "" && c.state != stateAskTask {
+		write("Task Name: " + BoldStyle.Render(c.taskName) + "\n")
+	}
+
 	return b.String()
 }
 
@@ -377,6 +443,13 @@ func (c *createModel) renderTrigger() string {
 	b := &strings.Builder{}
 	b.WriteString(BoldStyle.Render(fmt.Sprintf("%d. How should the job trigger?", c.questions)) + "\n\n")
 	b.WriteString(c.triggerList.View())
+	return b.String()
+}
+
+func (c *createModel) renderTask() string {
+	b := &strings.Builder{}
+	b.WriteString(BoldStyle.Render(fmt.Sprintf("%d. Select the task?", c.questions)) + "\n\n")
+	b.WriteString(c.taskList.View())
 	return b.String()
 }
 
@@ -442,6 +515,13 @@ func humanizeDuration(duration time.Duration) string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+func (c *createModel) renderWindow() string {
+	b := &strings.Builder{}
+	b.WriteString(BoldStyle.Render(fmt.Sprintf("%d. Window:", c.questions)) + "\n")
+	b.WriteString(c.textinput.View())
+	return b.String()
 }
 
 type listItem struct {
