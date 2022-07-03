@@ -16,11 +16,29 @@ import (
 
 var (
 	listWidth = 50
+	offsetMap = map[string]time.Duration{
+		"Hourly":  time.Minute * 5,
+		"Daily":   time.Hour * 1,
+		"Weekly":  time.Hour * 24,
+		"Monthly": time.Hour * 24,
+	}
+	sizeMap = map[string]time.Duration{
+		"Hourly":  time.Hour * 1,
+		"Daily":   time.Hour * 24,
+		"Weekly":  time.Hour * 24 * 7,
+		"Monthly": time.Hour * 24 * 30,
+	}
+	truncateMap = map[string]string{
+		"Hourly":  "h",
+		"Daily":   "d",
+		"Weekly":  "w",
+		"Monthly": "M",
+	}
 )
 
 func NewWindow() (*DataWindow, error) {
 	width, height, _ := term.GetSize(int(os.Stdout.Fd()))
-	return NewDataWindow(width, height, time.Now())
+	return NewDataWindow(width, height, time.Now().AddDate(0, -1, 0))
 }
 
 func NewDataWindow(width, height int, ref time.Time) (*DataWindow, error) {
@@ -55,6 +73,7 @@ func NewDataWindow(width, height int, ref time.Time) (*DataWindow, error) {
 		height:        height,
 		referenceTime: ref,
 		listTruncate:  l,
+		selectedFrame: "Hourly",
 	}, nil
 }
 
@@ -64,9 +83,10 @@ type DataWindow struct {
 
 	referenceTime time.Time
 
-	size       time.Duration
-	offset     time.Duration
-	truncateTo string
+	size          time.Duration
+	offset        time.Duration
+	truncateTo    string
+	selectedFrame string
 
 	listTruncate list.Model
 }
@@ -74,6 +94,10 @@ type DataWindow struct {
 var _ tea.Model = (*DataWindow)(nil)
 
 func (e *DataWindow) Init() tea.Cmd {
+	newSelect := e.listTruncate.SelectedItem()
+	e.size = sizeMap[newSelect.FilterValue()]
+	e.offset = 0
+	e.truncateTo = truncateMap[newSelect.FilterValue()]
 	return nil
 }
 
@@ -97,6 +121,10 @@ func (e *DataWindow) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd  tea.Cmd
 		cmds []tea.Cmd
 	)
+	selectedItem := e.listTruncate.SelectedItem()
+	if selectedItem == nil {
+		return e, nil
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -104,6 +132,23 @@ func (e *DataWindow) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		e.height = msg.Height
 	case tea.KeyMsg:
 		switch msg.Type {
+		case tea.KeyUp:
+			e.size += sizeMap[e.selectedFrame]
+			return e, nil
+		case tea.KeyDown:
+			if e.size > 0 {
+				e.size -= sizeMap[e.selectedFrame]
+			}
+			return e, nil
+
+		case tea.KeyLeft:
+			e.offset -= offsetMap[e.selectedFrame]
+			return e, nil
+
+		case tea.KeyRight:
+			e.offset += offsetMap[e.selectedFrame]
+			return e, nil
+
 		case tea.KeyCtrlC, tea.KeyCtrlBackslash:
 			return e, tea.Quit
 		}
@@ -114,38 +159,24 @@ func (e *DataWindow) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	e.listTruncate, cmd = e.listTruncate.Update(msg)
+	newSelect := e.listTruncate.SelectedItem()
+	if newSelect.FilterValue() != selectedItem.FilterValue() {
+		e.size = sizeMap[newSelect.FilterValue()]
+		e.offset = 0
+		e.truncateTo = truncateMap[newSelect.FilterValue()]
+	}
+	e.selectedFrame = newSelect.FilterValue()
+
 	cmds = append(cmds, cmd)
 
 	return e, tea.Batch(cmds...)
 }
 
 func (e DataWindow) Selected() *job.DataWindow {
-	selectedItem := e.listTruncate.SelectedItem()
-	if selectedItem == nil {
-		return nil
-	}
-
-	var truncate string
-	var size time.Duration
-	switch selectedItem.FilterValue() {
-	case "Hourly":
-		truncate = "h"
-		size = time.Hour * 1
-	case "Daily":
-		truncate = "d"
-		size = time.Hour * 24
-	case "Weekly":
-		truncate = "w"
-		size = time.Hour * 7 * 24
-	case "Monthly":
-		truncate = "M"
-		size = time.Hour * 7 * 30
-	}
-
 	return &job.DataWindow{
-		Size:       size,
-		Offset:     0,
-		TruncateTo: truncate,
+		Size:       e.size,
+		Offset:     e.offset,
+		TruncateTo: e.truncateTo,
 	}
 }
 
@@ -161,6 +192,8 @@ func (e *DataWindow) View() string {
 	detail := e.renderDetail(start, end)
 
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, list, detail))
+	b.WriteString("\n")
+	b.WriteString(e.renderStatus())
 
 	return b.String()
 }
@@ -185,7 +218,7 @@ func (e *DataWindow) renderDetail(start, end time.Time) string {
 		desc,
 		"\n",
 		renderWithStartEnd(start, end),
-		renderDataFrame("text"))
+		renderDataFrame(e.selectedFrame))
 
 	return content
 }
@@ -194,11 +227,35 @@ func (e *DataWindow) renderHeader() string {
 	// Render two columns of text.
 	headerMsg := lipgloss.JoinVertical(lipgloss.Center,
 		BoldStyle.Copy().Foreground(Feint).Render("Data Window"),
-		TextStyle.Copy().Foreground(Feint).Render("Showing representation of data for the window ")+
-			BoldStyle.Copy().Foreground(Feint).Render("Tab: select. Ctrl-j/k: navigate code"),
+		TextStyle.Copy().Foreground(Feint).Render("Showing representation of data ")+
+			BoldStyle.Copy().Foreground(Feint).Render("↑/↓: Change Size. →/←: Change offset"),
 	)
 
 	return lipgloss.Place(e.width, 3, lipgloss.Center, lipgloss.Center, headerMsg)
+}
+
+func (e *DataWindow) renderStatus() string {
+	statusStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FFFDF5")).
+		Background(lipgloss.Color("#6124DF")).
+		Padding(0, 1)
+
+	encodingStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FFFDF5")).
+		Background(lipgloss.Color("#A550DF")).
+		Padding(0, 1).
+		MarginRight(1).
+		Align(lipgloss.Right).
+		Width(10)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		statusStyle.Render("Size"),
+		encodingStyle.Render(e.size.String()),
+		statusStyle.Render("Offset"),
+		encodingStyle.Render(e.offset.String()),
+		statusStyle.Render("TruncateTo"),
+		encodingStyle.Render(e.truncateTo),
+	)
 }
 
 func renderDataFrame(name string) string {
@@ -218,6 +275,7 @@ func renderDataFrame(name string) string {
 		Border(tabBorder, true).
 		BorderForeground(highlight).
 		Padding(0, 3).
+		Align(lipgloss.Center).
 		Width(20)
 
 	tabGap := tab.Copy().
@@ -256,20 +314,12 @@ func renderDate(date time.Time) string {
 func listKeyMap() list.KeyMap {
 	return list.KeyMap{
 		CursorUp: key.NewBinding(
-			key.WithKeys("up"),
-			key.WithHelp("↑", "up"),
+			key.WithKeys("ctrl+up"),
+			key.WithHelp("(ctrl+↑)", "up"),
 		),
 		CursorDown: key.NewBinding(
-			key.WithKeys("down"),
-			key.WithHelp("↓", "down"),
-		),
-		PrevPage: key.NewBinding(
-			key.WithKeys("left"),
-			key.WithHelp("←", "prev page"),
-		),
-		NextPage: key.NewBinding(
-			key.WithKeys("right"),
-			key.WithHelp("→", "next page"),
+			key.WithKeys("ctrl+down"),
+			key.WithHelp("(ctrl+↓)", "down"),
 		),
 	}
 }
