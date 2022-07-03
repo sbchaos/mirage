@@ -25,6 +25,7 @@ func Execute() {
 
 	// Register Top Level Commands
 	rootCmd.AddCommand(NewCmdCreate())
+	rootCmd.AddCommand(NewCmdWindow())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)

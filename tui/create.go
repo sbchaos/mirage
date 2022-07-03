@@ -114,6 +114,7 @@ type createModel struct {
 
 	taskName string
 
+	windowView  *DataWindow
 	textinput   textinput.Model
 	triggerList list.Model
 	taskList    list.Model
@@ -122,7 +123,8 @@ type createModel struct {
 // Ensure that createModel fulfils the tea.Model interface.
 var _ tea.Model = (*createModel)(nil)
 
-func (c createModel) Init() tea.Cmd {
+func (c *createModel) Init() tea.Cmd {
+	c.windowView, _ = NewDataWindow(c.width, c.height-25, time.Now())
 	return tea.Batch()
 }
 
@@ -520,7 +522,14 @@ func humanizeDuration(duration time.Duration) string {
 func (c *createModel) renderWindow() string {
 	b := &strings.Builder{}
 	b.WriteString(BoldStyle.Render(fmt.Sprintf("%d. Window:", c.questions)) + "\n")
-	b.WriteString(c.textinput.View())
+
+	if c.height < 20 {
+		b.WriteString("\n" + RenderWarning("Your TTY doesn't have enough height to render the window viewer") + "\n")
+		return b.String()
+	}
+
+	b.WriteString(c.windowView.View())
+
 	return b.String()
 }
 
