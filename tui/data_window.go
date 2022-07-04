@@ -314,12 +314,12 @@ func renderDate(date time.Time) string {
 func listKeyMap() list.KeyMap {
 	return list.KeyMap{
 		CursorUp: key.NewBinding(
-			key.WithKeys("ctrl+up"),
-			key.WithHelp("(ctrl+↑)", "up"),
+			key.WithKeys("shift+up"),
+			key.WithHelp("(shift+↑)", "up"),
 		),
 		CursorDown: key.NewBinding(
-			key.WithKeys("ctrl+down"),
-			key.WithHelp("(ctrl+↓)", "down"),
+			key.WithKeys("shift+down"),
+			key.WithHelp("(shift+↓)", "down"),
 		),
 	}
 }
